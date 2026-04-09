@@ -3,11 +3,14 @@ const cors = require('cors');
 const { instagramGetUrl } = require("instagram-url-direct");
 
 const app = express();
-const port = 3000;
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public')); // Serve the generated tray.png
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ ok: true });
+});
 
 app.post('/api/instagram/download', async (req, res) => {
   const { url } = req.body;
@@ -127,7 +130,7 @@ app.post('/api/convert', async (req, res) => {
   }
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Node Server is running on port ${PORT}`);
 });
