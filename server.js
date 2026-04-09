@@ -148,19 +148,35 @@ app.post('/api/convert', async (req, res) => {
       
       const dynamicY = Math.max(0, (H - cropSize) * cropPercentage);
       const cropFilter = `crop=${cropSize}:${cropSize}:0:${dynamicY}`;
+      const durationSec = type === 'gif' ? 3 : 2;
+      const filters = type === 'gif'
+        ? [cropFilter, 'fps=15', 'scale=512:512:flags=lanczos']
+        : [cropFilter, 'fps=8', 'scale=512:512:flags=lanczos'];
       
       ffmpeg(inputPath)
         .setStartTime(0)
-        .setDuration(3)
-        .videoFilters([cropFilter, 'scale=512:512'])
+        .setDuration(durationSec)
+        .videoFilters(filters)
         .outputOptions(
            type === 'gif' 
               ? ['-r 15', '-loop 0']
-              : ['-vcodec libwebp', '-lossless 0', '-qscale:v 50', '-preset default', '-loop 0', '-an', '-vsync 0']
+              : ['-vcodec libwebp', '-lossless 0', '-q:v 28', '-compression_level 6', '-preset picture', '-loop 0', '-an', '-vsync 0']
         )
         .save(outputPath)
         .on('end', async () => {
           console.log(`[FFmpeg-Cloud] Completed ${outputExt} encoding.`);
+
+          if (type === 'webp') {
+            const outputSize = fs.statSync(outputPath).size;
+            console.log(`[FFmpeg-Cloud] WebP size=${outputSize} bytes`);
+            if (outputSize > 500 * 1024) {
+              if(fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+              if(fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+              return res.status(422).json({
+                error: 'Generated sticker is too large for WhatsApp (>500KB). Try a less busy crop area.',
+              });
+            }
+          }
           
           if (type === 'webp') {
               console.log(`[FFmpeg-Cloud] Raw WebP Generated via FFmpeg successfully.`);
