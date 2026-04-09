@@ -17,13 +17,32 @@ const decodeInstagramEscapedUrl = (rawUrl) => {
     .replaceAll('&amp;', '&');
 };
 
+const normalizeInstagramUrl = (rawUrl) => {
+  try {
+    const parsed = new URL(rawUrl.trim());
+    const path = parsed.pathname.replace(/\/+$/, '');
+    const pathMatch = /^\/(reel|p|tv)\/([^/?#]+)/i.exec(path);
+    if (pathMatch?.[1] && pathMatch?.[2]) {
+      return `https://www.instagram.com/${pathMatch[1].toLowerCase()}/${pathMatch[2]}/`;
+    }
+
+    return `${parsed.origin}${path}/`;
+  } catch {
+    return rawUrl;
+  }
+};
+
 const extractMediaUrlFromInstagramPage = (html) => {
   if (!html) return null;
 
   const patterns = [
     /"video_url":"(https:[^"]+)"/,
     /"contentUrl":"(https:[^"]+)"/,
-    /"display_url":"(https:[^"]+)"/
+    /"display_url":"(https:[^"]+)"/,
+    /"video_versions":\s*\[\s*\{[^}]*"url":"(https:[^"]+)"/,
+    /property="og:video"\s+content="(https:[^"]+)"/i,
+    /property="og:video:secure_url"\s+content="(https:[^"]+)"/i,
+    /property="og:image"\s+content="(https:[^"]+)"/i
   ];
 
   for (const pattern of patterns) {
@@ -47,10 +66,11 @@ app.post('/api/instagram/download', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  console.log(`[Proxy] Fetching Instagram URL: ${url}`);
+  const normalizedUrl = normalizeInstagramUrl(url);
+  console.log(`[Proxy] Fetching Instagram URL: ${normalizedUrl}`);
 
   try {
-    const data = await instagramGetUrl(url);
+    const data = await instagramGetUrl(normalizedUrl);
     if (data?.url_list?.length > 0) {
         const extractedMediaUrl = data.url_list[0];
         console.log(`[Proxy] Successfully extracted media URL: ${extractedMediaUrl}`);
@@ -64,11 +84,12 @@ app.post('/api/instagram/download', async (req, res) => {
   }
 
   try {
-    const pageResponse = await axios.get(url, {
+    const pageResponse = await axios.get(normalizedUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
+        Referer: 'https://www.instagram.com/',
       },
       maxRedirects: 5,
       timeout: 15000,
