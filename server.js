@@ -41,9 +41,11 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 
-// Natively installed homebrew ffmpeg has libwebp compiled.
-// DO NOT override with static node packages.
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 app.post('/api/convert', async (req, res) => {
   const { url, type, cropPercentage = 0 } = req.body;
