@@ -1,12 +1,40 @@
 const express = require('express');
 const cors = require('cors');
 const { instagramGetUrl } = require("instagram-url-direct");
+const axios = require('axios');
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public')); // Serve the generated tray.png
+
+const decodeInstagramEscapedUrl = (rawUrl) => {
+  if (!rawUrl) return '';
+  return rawUrl
+    .replaceAll(String.raw`\u0026`, '&')
+    .replaceAll(String.raw`\/`, '/')
+    .replaceAll('&amp;', '&');
+};
+
+const extractMediaUrlFromInstagramPage = (html) => {
+  if (!html) return null;
+
+  const patterns = [
+    /"video_url":"(https:[^"]+)"/,
+    /"contentUrl":"(https:[^"]+)"/,
+    /"display_url":"(https:[^"]+)"/
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) {
+      return decodeInstagramEscapedUrl(match[1]);
+    }
+  }
+
+  return null;
+};
 
 app.get('/health', (req, res) => {
   res.status(200).json({ ok: true });
@@ -23,23 +51,50 @@ app.post('/api/instagram/download', async (req, res) => {
 
   try {
     const data = await instagramGetUrl(url);
-    if (data && data.url_list && data.url_list.length > 0) {
+    if (data?.url_list?.length > 0) {
         const extractedMediaUrl = data.url_list[0];
         console.log(`[Proxy] Successfully extracted media URL: ${extractedMediaUrl}`);
         return res.json({ success: true, url: extractedMediaUrl });
     } else {
         console.log(`[Proxy] Could not extract media URL`, data);
-        return res.status(404).json({ success: false, error: 'Could not extract URL. Make sure it is a public post.' });
+        // Fall through to HTML extraction fallback below.
     }
   } catch (error) {
-    console.error('[Proxy] Error fetching Instagram content:', error);
-    return res.status(500).json({ success: false, error: 'Failed to process URL. Instagram might be blocking the request.' });
+    console.warn('[Proxy] Primary extractor failed, trying HTML fallback:', error?.message || error);
+  }
+
+  try {
+    const pageResponse = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      maxRedirects: 5,
+      timeout: 15000,
+    });
+
+    const fallbackUrl = extractMediaUrlFromInstagramPage(pageResponse.data);
+    if (fallbackUrl) {
+      console.log(`[Proxy] Fallback extracted media URL: ${fallbackUrl}`);
+      return res.json({ success: true, url: fallbackUrl });
+    }
+
+    return res.status(404).json({
+      success: false,
+      error: 'Could not extract media URL. Ensure the post/reel is public and accessible without login.',
+    });
+  } catch (fallbackError) {
+    console.error('[Proxy] HTML fallback failed:', fallbackError?.message || fallbackError);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to process URL. Instagram blocked the request from the server region.',
+    });
   }
 });
 
-const fs = require('fs');
-const path = require('path');
-const axios = require('axios');
+const fs = require('node:fs');
+const path = require('node:path');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
