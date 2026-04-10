@@ -124,7 +124,7 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 app.post('/api/convert', async (req, res) => {
-  const { url, type, cropPercentage = 0 } = req.body;
+  const { url, type, cropPercentage = 0, startTimeSec = 0, durationSec } = req.body;
   if (!url) return res.status(400).json({ error: 'URL is required' });
 
   const inputPath = path.join(__dirname, `temp_video_${Date.now()}.mp4`);
@@ -166,17 +166,22 @@ app.post('/api/convert', async (req, res) => {
       const W = stream.width;
       const H = stream.height;
       const cropSize = Math.min(W, H); 
+      const safeStartSec = Math.max(0, Number(startTimeSec) || 0);
+      const defaultDuration = type === 'gif' ? 3 : 2;
+      const requestedDuration = Number(durationSec);
+      const safeDurationSec = Number.isFinite(requestedDuration)
+        ? Math.max(1, Math.min(6, requestedDuration))
+        : defaultDuration;
       
       const dynamicY = Math.max(0, (H - cropSize) * cropPercentage);
       const cropFilter = `crop=${cropSize}:${cropSize}:0:${dynamicY}`;
-      const durationSec = type === 'gif' ? 3 : 2;
       const filters = type === 'gif'
         ? [cropFilter, 'fps=15', 'scale=512:512:flags=lanczos']
         : [cropFilter, 'fps=8', 'scale=512:512:flags=lanczos'];
       
       ffmpeg(inputPath)
-        .setStartTime(0)
-        .setDuration(durationSec)
+        .setStartTime(safeStartSec)
+        .setDuration(safeDurationSec)
         .videoFilters(filters)
         .outputOptions(
            type === 'gif' 
