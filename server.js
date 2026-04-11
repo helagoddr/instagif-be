@@ -2,12 +2,131 @@ const express = require('express');
 const cors = require('cors');
 const { instagramGetUrl } = require("instagram-url-direct");
 const axios = require('axios');
+const multer = require('multer');
+const Jimp = require('jimp');
 
 const app = express();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public')); // Serve the generated tray.png
+
+const colorDistance = (r1, g1, b1, r2, g2, b2) => {
+  const dr = r1 - r2;
+  const dg = g1 - g2;
+  const db = b1 - b2;
+  return Math.hypot(dr, dg, db);
+};
+
+const getCornerAverage = (image) => {
+  const { width, height } = image.bitmap;
+  const sampleSize = Math.max(4, Math.floor(Math.min(width, height) * 0.04));
+  let totalR = 0;
+  let totalG = 0;
+  let totalB = 0;
+  let count = 0;
+
+  const sampleRect = (startX, startY) => {
+    for (let y = startY; y < startY + sampleSize; y += 1) {
+      for (let x = startX; x < startX + sampleSize; x += 1) {
+        const pixel = Jimp.intToRGBA(image.getPixelColor(x, y));
+        totalR += pixel.r;
+        totalG += pixel.g;
+        totalB += pixel.b;
+        count += 1;
+      }
+    }
+  };
+
+  sampleRect(0, 0);
+  sampleRect(width - sampleSize, 0);
+  sampleRect(0, height - sampleSize);
+  sampleRect(width - sampleSize, height - sampleSize);
+
+  return {
+    r: Math.round(totalR / Math.max(1, count)),
+    g: Math.round(totalG / Math.max(1, count)),
+    b: Math.round(totalB / Math.max(1, count)),
+  };
+};
+
+const enqueueBorderSeeds = (width, height, pushSeed) => {
+  for (let x = 0; x < width; x += 1) {
+    pushSeed(x, 0);
+    pushSeed(x, height - 1);
+  }
+
+  for (let y = 0; y < height; y += 1) {
+    pushSeed(0, y);
+    pushSeed(width - 1, y);
+  }
+};
+
+const floodFillBackground = (queue, visited, width, height, canRemove) => {
+  const inBounds = (x, y) => x >= 0 && x < width && y >= 0 && y < height;
+  const idxOf = (x, y) => y * width + x;
+
+  while (queue.length > 0) {
+    const [x, y] = queue.shift();
+    const neighbors = [
+      [x + 1, y],
+      [x - 1, y],
+      [x, y + 1],
+      [x, y - 1],
+    ];
+
+    for (const [nx, ny] of neighbors) {
+      if (!inBounds(nx, ny)) continue;
+      const idx = idxOf(nx, ny);
+      if (visited[idx]) continue;
+      if (!canRemove(nx, ny)) continue;
+      visited[idx] = 1;
+      queue.push([nx, ny]);
+    }
+  }
+};
+
+const makeVisitedPixelsTransparent = (image, visited) => {
+  const { width, height } = image.bitmap;
+  const idxOf = (x, y) => y * width + x;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!visited[idxOf(x, y)]) continue;
+      const rgba = Jimp.intToRGBA(image.getPixelColor(x, y));
+      image.setPixelColor(Jimp.rgbaToInt(rgba.r, rgba.g, rgba.b, 0), x, y);
+    }
+  }
+};
+
+const removeBackgroundByFloodFill = (image, tolerance = 70) => {
+  const { width, height } = image.bitmap;
+  const bg = getCornerAverage(image);
+  const visited = new Uint8Array(width * height);
+  const queue = [];
+
+  const inBounds = (x, y) => x >= 0 && x < width && y >= 0 && y < height;
+  const idxOf = (x, y) => y * width + x;
+
+  const canRemove = (x, y) => {
+    const { r, g, b } = Jimp.intToRGBA(image.getPixelColor(x, y));
+    return colorDistance(r, g, b, bg.r, bg.g, bg.b) <= tolerance;
+  };
+
+  const pushSeed = (x, y) => {
+    if (!inBounds(x, y)) return;
+    const idx = idxOf(x, y);
+    if (visited[idx]) return;
+    if (!canRemove(x, y)) return;
+    visited[idx] = 1;
+    queue.push([x, y]);
+  };
+
+  enqueueBorderSeeds(width, height, pushSeed);
+  floodFillBackground(queue, visited, width, height, canRemove);
+  makeVisitedPixelsTransparent(image, visited);
+};
 
 const decodeInstagramEscapedUrl = (rawUrl) => {
   if (!rawUrl) return '';
@@ -111,6 +230,30 @@ app.post('/api/instagram/download', async (req, res) => {
       success: false,
       error: 'Failed to process URL. Instagram blocked the request from the server region.',
     });
+  }
+});
+
+app.post('/api/remove-bg', upload.single('image_file'), async (req, res) => {
+  if (!req.file?.buffer) {
+    return res.status(400).json({ error: 'image_file is required' });
+  }
+
+  const rawTolerance = Number(req.body?.tolerance);
+  const tolerance = Number.isFinite(rawTolerance)
+    ? Math.max(30, Math.min(120, rawTolerance))
+    : 70;
+
+  try {
+    const image = await Jimp.read(req.file.buffer);
+    image.contain(1024, 1024);
+    removeBackgroundByFloodFill(image, tolerance);
+
+    const outBuffer = await image.getBufferAsync(Jimp.MIME_PNG);
+    res.setHeader('Content-Type', 'image/png');
+    return res.status(200).send(outBuffer);
+  } catch (error) {
+    console.error('[RemoveBG] Failed:', error?.message || error);
+    return res.status(500).json({ error: 'Failed to remove background' });
   }
 });
 
