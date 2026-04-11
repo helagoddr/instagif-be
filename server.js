@@ -4,6 +4,11 @@ const { instagramGetUrl } = require("instagram-url-direct");
 const axios = require('axios');
 const multer = require('multer');
 const Jimp = require('jimp');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const { spawn } = require('node:child_process');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024 } });
@@ -11,6 +16,29 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public')); // Serve the generated tray.png
+
+const runRembgCli = async (inputPath, outputPath) => {
+  await new Promise((resolve, reject) => {
+    const child = spawn('rembg', ['i', inputPath, outputPath]);
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr || `rembg exited with code ${code}`));
+      }
+    });
+  });
+};
 
 const colorDistance = (r1, g1, b1, r2, g2, b2) => {
   const dr = r1 - r2;
@@ -238,12 +266,35 @@ app.post('/api/remove-bg', upload.single('image_file'), async (req, res) => {
     return res.status(400).json({ error: 'image_file is required' });
   }
 
+  const method = String(req.body?.method || 'auto').toLowerCase();
   const rawTolerance = Number(req.body?.tolerance);
   const tolerance = Number.isFinite(rawTolerance)
     ? Math.max(30, Math.min(120, rawTolerance))
     : 70;
 
+  const tempBase = `rembg_${Date.now()}_${Math.round(Math.random() * 1_000_000)}`;
+  const inputPath = path.join(os.tmpdir(), `${tempBase}.png`);
+  const outputPath = path.join(os.tmpdir(), `${tempBase}_out.png`);
+
   try {
+    if (method === 'auto' || method === 'rembg') {
+      try {
+        await fsp.writeFile(inputPath, req.file.buffer);
+        await runRembgCli(inputPath, outputPath);
+        const outBuffer = await fsp.readFile(outputPath);
+        res.setHeader('Content-Type', 'image/png');
+        return res.status(200).send(outBuffer);
+      } catch (rembgError) {
+        console.warn('[RemoveBG] rembg failed, using local fallback:', rembgError?.message || rembgError);
+        if (method === 'rembg') {
+          return res.status(500).json({
+            error: 'rembg execution failed',
+            details: rembgError?.message || 'Unknown rembg error',
+          });
+        }
+      }
+    }
+
     const image = await Jimp.read(req.file.buffer);
     image.contain(1024, 1024);
     removeBackgroundByFloodFill(image, tolerance);
@@ -254,11 +305,11 @@ app.post('/api/remove-bg', upload.single('image_file'), async (req, res) => {
   } catch (error) {
     console.error('[RemoveBG] Failed:', error?.message || error);
     return res.status(500).json({ error: 'Failed to remove background' });
+  } finally {
+    try { await fsp.unlink(inputPath); } catch {}
+    try { await fsp.unlink(outputPath); } catch {}
   }
 });
-
-const fs = require('node:fs');
-const path = require('node:path');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
