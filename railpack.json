@@ -4,13 +4,13 @@
   "steps": {
     "install": {
       "commands": [
-        "npm install --no-audit --no-fund",
+        "if [ -f package.json ]; then npm install --no-audit --no-fund; elif [ -f backend/package.json ]; then cd backend && npm install --no-audit --no-fund; else echo 'package.json not found' && exit 1; fi",
         "python -m pip install --upgrade pip",
-        "python -m pip install --no-cache-dir -r requirements.txt"
+        "if [ -f requirements.txt ]; then python -m pip install --no-cache-dir -r requirements.txt; elif [ -f backend/requirements.txt ]; then python -m pip install --no-cache-dir -r backend/requirements.txt; else echo 'requirements.txt not found' && exit 1; fi"
       ]
     }
   },
   "deploy": {
-    "startCommand": "npm start"
+    "startCommand": "if [ -f package.json ]; then npm start; elif [ -f backend/package.json ]; then cd backend && npm start; else echo 'package.json not found' && exit 1; fi"
   }
 }
