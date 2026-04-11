@@ -1,6 +1,7 @@
 {
   "$schema": "https://schema.railpack.com",
   "buildAptPackages": ["ffmpeg"],
+  "buildMisePackages": ["node", "python"],
   "steps": {
     "install": {
       "commands": [
