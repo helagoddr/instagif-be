@@ -318,14 +318,14 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 app.post('/api/convert', async (req, res) => {
-  const { url, type, cropPercentage = 0, startTimeSec = 0, durationSec } = req.body;
+  const { url, type, cropPercentage = 0, crop, startTimeSec = 0, durationSec } = req.body;
   if (!url) return res.status(400).json({ error: 'URL is required' });
 
   const inputPath = path.join(__dirname, `temp_video_${Date.now()}.mp4`);
   const outputExt = type === 'gif' ? 'gif' : 'webp';
   const outputPath = path.join(__dirname, `temp_output_${Date.now()}.${outputExt}`);
 
-  console.log(`[FFmpeg-Cloud] Starting conversion to ${outputExt} for requested crop ${cropPercentage}`);
+  console.log(`[FFmpeg-Cloud] Starting conversion to ${outputExt}`);
 
   try {
     // 1. Download the remote media back to the server securely
@@ -359,16 +359,62 @@ app.post('/api/convert', async (req, res) => {
       const stream = metadata.streams.find(s => s.codec_type === 'video');
       const W = stream.width;
       const H = stream.height;
-      const cropSize = Math.min(W, H); 
+
+      const hasCropRect =
+        crop &&
+        Number.isFinite(Number(crop.x)) &&
+        Number.isFinite(Number(crop.y)) &&
+        Number.isFinite(Number(crop.width)) &&
+        Number.isFinite(Number(crop.height)) &&
+        Number.isFinite(Number(crop.editorWidth)) &&
+        Number.isFinite(Number(crop.editorHeight)) &&
+        Number(crop.width) > 1 &&
+        Number(crop.height) > 1 &&
+        Number(crop.editorWidth) > 1 &&
+        Number(crop.editorHeight) > 1;
+
       const safeStartSec = Math.max(0, Number(startTimeSec) || 0);
       const defaultDuration = type === 'gif' ? 3 : 2;
       const requestedDuration = Number(durationSec);
       const safeDurationSec = Number.isFinite(requestedDuration)
         ? Math.max(1, Math.min(6, requestedDuration))
         : defaultDuration;
-      
-      const dynamicY = Math.max(0, (H - cropSize) * cropPercentage);
-      const cropFilter = `crop=${cropSize}:${cropSize}:0:${dynamicY}`;
+
+      let cropFilter;
+      if (hasCropRect) {
+        const editorW = Number(crop.editorWidth);
+        const editorH = Number(crop.editorHeight);
+        const selectionX = Number(crop.x);
+        const selectionY = Number(crop.y);
+        const selectionW = Number(crop.width);
+        const selectionH = Number(crop.height);
+
+        // Map from editor-space coordinates (ResizeMode.CONTAIN) into source pixels.
+        const scale = Math.min(editorW / W, editorH / H);
+        const visibleW = W * scale;
+        const visibleH = H * scale;
+        const visibleOffsetX = (editorW - visibleW) / 2;
+        const visibleOffsetY = (editorH - visibleH) / 2;
+
+        const srcX = Math.round((selectionX - visibleOffsetX) / scale);
+        const srcY = Math.round((selectionY - visibleOffsetY) / scale);
+        const srcW = Math.round(selectionW / scale);
+        const srcH = Math.round(selectionH / scale);
+
+        const safeW = Math.max(2, Math.min(W, srcW));
+        const safeH = Math.max(2, Math.min(H, srcH));
+        const safeX = Math.max(0, Math.min(W - safeW, srcX));
+        const safeY = Math.max(0, Math.min(H - safeH, srcY));
+
+        cropFilter = `crop=${safeW}:${safeH}:${safeX}:${safeY}`;
+        console.log(`[FFmpeg-Cloud] Using rect crop: ${cropFilter}`);
+      } else {
+        const cropSize = Math.min(W, H);
+        const dynamicY = Math.max(0, (H - cropSize) * cropPercentage);
+        cropFilter = `crop=${cropSize}:${cropSize}:0:${dynamicY}`;
+        console.log(`[FFmpeg-Cloud] Using fallback crop: ${cropFilter}`);
+      }
+
       const filters = type === 'gif'
         ? [cropFilter, 'fps=15', 'scale=512:512:flags=lanczos']
         : [cropFilter, 'fps=8', 'scale=512:512:flags=lanczos'];

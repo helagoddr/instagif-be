@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "buildAptPackages": ["ffmpeg", "nodejs", "npm"],
+  "steps": {
+    "install": {
+      "commands": [
+        "npm install --no-audit --no-fund"
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "npm start"
+  }
+}
